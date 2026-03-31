@@ -62,11 +62,8 @@ FONT = "JetBrains Mono, Consolas, monospace"
 PL   = dict(
     paper_bgcolor=C["panel"], plot_bgcolor=C["bg"],
     font=dict(family=FONT, color=C["text"], size=12),
-    # uirevision keeps the chart DOM node alive across reruns — only data
-    # is patched, preventing the full flash/blink on every refresh.
-    uirevision="static",
-    transition=dict(duration=200, easing="linear"),
 )
+_TR  = dict(duration=200, easing="linear")
 AX   = dict(gridcolor=C["grid"], zeroline=False, showgrid=True)
 
 # ── Baked training data ───────────────────────────────────────────────────────
@@ -484,7 +481,7 @@ with tab1:
                 line=dict(color=C["muted"], width=1))
 
         ob.update_layout(**PL, barmode="overlay", showlegend=True,
-            uirevision="orderbook",   # separate key so price axis updates freely
+            uirevision="orderbook", transition=_TR,
             legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
                         font=dict(size=10, color=C["text"])),
             title=dict(text=f"Mid  &#36;{s['mid']:>12,.2f}",
@@ -534,7 +531,7 @@ with tab1:
                 secondary_y=True)
             pnl_fig.add_hline(y=0, line=dict(color=C["muted"], width=0.5),
                                secondary_y=False)
-        pnl_fig.update_layout(**PL, height=190,
+        pnl_fig.update_layout(**PL, uirevision="pnl", transition=_TR, height=190,
             legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
                         font=dict(size=10, color=C["text"])),
             margin=dict(l=50, r=50, t=8, b=28))
@@ -560,7 +557,7 @@ with tab1:
                     line=dict(color=C["muted"], dash="dash", width=1),
                     annotation_text=f"μ={sp_mean:.2f}",
                     annotation_font_color=C["muted"])
-            sp_fig.update_layout(**PL, showlegend=False, height=185,
+            sp_fig.update_layout(**PL, uirevision="sp", transition=_TR, showlegend=False, height=185,
                 margin=dict(l=50, r=10, t=8, b=28))
             sp_fig.update_xaxes(**AX)
             sp_fig.update_yaxes(title_text="bps", **AX)
@@ -575,7 +572,7 @@ with tab1:
                 cols = [C["pos"] if v < 3 else C["warn"] if v < 7
                         else C["neg"] for v in ia]
                 inv_fig.add_trace(go.Bar(x=steps, y=ia, marker_color=cols))
-            inv_fig.update_layout(**PL, showlegend=False, height=185,
+            inv_fig.update_layout(**PL, uirevision="inv", transition=_TR, showlegend=False, height=185,
                 margin=dict(l=50, r=10, t=8, b=28))
             inv_fig.update_xaxes(**AX)
             inv_fig.update_yaxes(title_text="|Inv| BTC", **AX)
@@ -676,7 +673,7 @@ with tab2:
         train_fig.add_annotation(x=TRAIN_STEPS[-1], y=TRAIN_REWARD[-1],
             text=f" FINAL<br> {TRAIN_REWARD[-1]}", showarrow=False,
             font=dict(color=C["pos"], size=10, family=FONT), xanchor="right")
-        train_fig.update_layout(**PL, showlegend=False, height=280,
+        train_fig.update_layout(**PL, uirevision="train", transition=_TR, showlegend=False, height=280,
             margin=dict(l=50, r=20, t=20, b=40),
             xaxis_title="Training Steps", yaxis_title="Episode Reward")
         train_fig.update_xaxes(tickformat=".2s", **AX)
@@ -700,7 +697,7 @@ with tab2:
             marker_color=C["twap"], opacity=0.9,
             text=[f"{v:.4f}" for v in twv], textposition="outside",
             textfont=dict(color=C["twap"], size=10)))
-        bar_fig.update_layout(**PL, barmode="group", height=280,
+        bar_fig.update_layout(**PL, uirevision="bar", transition=_TR, barmode="group", height=280,
             legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
                         font=dict(size=10, color=C["text"])),
             margin=dict(l=40, r=20, t=20, b=40))
@@ -745,7 +742,7 @@ with tab2:
                     text=f" {albl} leads by {diff_str}", showarrow=False,
                     font=dict(color=diff_col, size=11, family=FONT),
                     xanchor="right")
-    live_fig.update_layout(**PL, height=240,
+    live_fig.update_layout(**PL, uirevision="live", transition=_TR, height=240,
         legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
                     font=dict(size=11, color=C["text"])),
         margin=dict(l=50, r=20, t=10, b=40))
