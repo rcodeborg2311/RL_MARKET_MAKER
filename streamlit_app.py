@@ -108,6 +108,7 @@ def _start_feed():
         from data.coinbase_rest import CoinbaseRESTFeed
         feed = CoinbaseRESTFeed()
         if feed.is_connected():
+            feed.get_new_trades()   # drain the initial ~100-trade historical dump
             print("[Dashboard] Live Coinbase REST feed connected.")
             return feed
     except Exception as e:
@@ -150,7 +151,7 @@ def _fresh_state():
 
 def _fresh_hist():
     return {k: deque(maxlen=MAX_HIST)
-            for k in ["pnl", "inv", "spread", "drawdown", "steps"]}
+            for k in ["pnl", "inv", "spread", "drawdown", "steps", "filled"]}
 
 def _init_ss():
     ss = st.session_state
@@ -219,9 +220,14 @@ def _tick(agent, gamma, spread_mult, feed, synth, features, sim):
     ss.state["inventory"] += bf - af
     ss.state["pnl"]       += af * (ask_p - mid) + bf * (mid - bid_p)
 
-    if bf > 0 or af > 0:
+    got_fill = 1 if (bf > 0 or af > 0) else 0
+    if got_fill:
         ss.state["total_fills"] += 1
-    fill_rate  = ss.state["total_fills"] / max(ss.state["step"] + 1, 1)
+    ss.hist["filled"].append(got_fill)
+    # Rolling fill rate over the last 50 steps — reflects current performance,
+    # not cumulative history (which gets dragged down by the initial trade dump)
+    recent = list(ss.hist["filled"])[-50:]
+    fill_rate = sum(recent) / len(recent) if recent else 0.0
     spread_bps = (ask_p - bid_p) / mid * 10_000 if mid > 0 else 0.0
     ss.state["peak_pnl"] = max(ss.state["peak_pnl"], ss.state["pnl"])
     drawdown   = ss.state["pnl"] - ss.state["peak_pnl"]
