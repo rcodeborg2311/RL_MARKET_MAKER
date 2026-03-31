@@ -223,6 +223,8 @@ def _tick(agent, gamma, spread_mult, feed, synth, features, sim):
     got_fill = 1 if (bf > 0 or af > 0) else 0
     if got_fill:
         ss.state["total_fills"] += 1
+    if "filled" not in ss.hist:
+        ss.hist["filled"] = deque(maxlen=MAX_HIST)
     ss.hist["filled"].append(got_fill)
     # Rolling fill rate over the last 50 steps — reflects current performance,
     # not cumulative history (which gets dragged down by the initial trade dump)
