@@ -3,8 +3,9 @@ Streamlit RL Market-Making Dashboard
 Run locally:   streamlit run streamlit_app.py
 Deploy:        push to GitHub → share.streamlit.io → connect repo → done
 """
-import os, sys, time
+import os, sys
 from collections import deque
+from streamlit_autorefresh import st_autorefresh
 
 import numpy as np
 import torch
@@ -308,7 +309,7 @@ with st.sidebar:
         f"<div style='font-family:{FONT};font-size:11px;color:{C['muted']};'>"
         f"step {ss.state['step']:,} · fills {ss.state['total_fills']:,}<br>"
         f"γ={gamma:.2f} · spread×{spread_mult:.2f}<br>"
-        f"inv_penalty ${inv_pen:.8f}</div>",
+        f"inv_penalty &#36;{inv_pen:.8f}</div>",
         unsafe_allow_html=True)
 
 # ── Auto-reset on param change ────────────────────────────────────────────────
@@ -360,7 +361,7 @@ with tab1:
     dd_v    = s.get("drawdown", 0.0)
     sig_v   = s.get("sigma", 0.01)
 
-    def _colored(val, prefix="$", suffix="", decimals=6, pos=None, neg=None, neu=None):
+    def _colored(val, prefix="&#36;", suffix="", decimals=6, pos=None, neg=None, neu=None):
         pos = pos or C["pos"]; neg = neg or C["neg"]; neu = neu or C["text"]
         col = pos if val > 0 else neg if val < 0 else neu
         return (f"<span style='color:{col};font-size:22px;font-weight:700;"
@@ -382,7 +383,7 @@ with tab1:
         st.markdown(
             _mhdr("RISK-ADJ P&L") +
             f"<span style='color:{rc};font-size:22px;font-weight:700;"
-            f"font-family:{FONT};'>${radj_v:.6f}{flag}</span>",
+            f"font-family:{FONT};'>&#36;{radj_v:.6f}{flag}</span>",
             unsafe_allow_html=True)
     with m3:
         ic = C["text"] if abs(inv_v) < 3 else C["warn"]
@@ -410,7 +411,7 @@ with tab1:
         st.markdown(
             _mhdr("DRAWDOWN") +
             f"<span style='color:{dc};font-size:22px;font-weight:700;"
-            f"font-family:{FONT};'>${dd_v:.6f}</span>",
+            f"font-family:{FONT};'>&#36;{dd_v:.6f}</span>",
             unsafe_allow_html=True)
     with m7:
         vc = C["warn"] if sig_v > 1.0 else C["text"]
@@ -487,22 +488,25 @@ with tab1:
         st.plotly_chart(ob, use_container_width=True,
                         config={"displayModeBar": False})
 
-        best_bid = f"${float(s['bids'][0][0]):,.2f}" if s["bids"] else "—"
-        best_ask = f"${float(s['asks'][0][0]):,.2f}" if s["asks"] else "—"
-        st.markdown(
+        # Use columns to avoid Streamlit treating $ prices as LaTeX delimiters
+        bb_val = f"{float(s['bids'][0][0]):,.2f}" if s["bids"] else "—"
+        ba_val = f"{float(s['asks'][0][0]):,.2f}" if s["asks"] else "—"
+        bc1, bc2, bc3 = st.columns(3)
+        bc1.markdown(
             f"<span style='color:{C['bid']};font-weight:bold;font-family:{FONT};"
             f"font-size:12px;'>BID</span> "
             f"<span style='color:{C['text']};font-family:{FONT};font-size:12px;'>"
-            f"{best_bid}</span>"
+            f"&#36;{bb_val}</span>", unsafe_allow_html=True)
+        bc2.markdown(
             f"<span style='color:{C['ask']};font-weight:bold;font-family:{FONT};"
-            f"font-size:12px;margin-left:14px;'>ASK</span> "
+            f"font-size:12px;'>ASK</span> "
             f"<span style='color:{C['text']};font-family:{FONT};font-size:12px;'>"
-            f"{best_ask}</span>"
-            f"<span style='color:{C['muted']};font-family:{FONT};font-size:12px;"
-            f"margin-left:14px;'>SPREAD</span> "
+            f"&#36;{ba_val}</span>", unsafe_allow_html=True)
+        bc3.markdown(
+            f"<span style='color:{C['muted']};font-family:{FONT};font-size:12px;'>"
+            f"SPREAD</span> "
             f"<span style='color:{C['warn']};font-family:{FONT};font-size:12px;'>"
-            f"{sp_v:.2f} bps</span>",
-            unsafe_allow_html=True)
+            f"{sp_v:.2f} bps</span>", unsafe_allow_html=True)
 
     # ── P&L + Inventory, Spread, Inventory Risk ───────────────────────────────
     with col_right:
@@ -798,7 +802,7 @@ with tab2:
                 unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# AUTO-REFRESH — reruns entire script every 500ms
+# AUTO-REFRESH — lightweight JS counter, triggers a Streamlit rerun every 500ms
+# without a full DOM teardown, so charts don't flash/blink between frames.
 # ═══════════════════════════════════════════════════════════════════════════════
-time.sleep(0.5)
-st.rerun()
+st_autorefresh(interval=500, limit=None, key="autorefresh")
