@@ -59,8 +59,14 @@ C = {
     "twap":      "#c040e0",
 }
 FONT = "JetBrains Mono, Consolas, monospace"
-PL   = dict(paper_bgcolor=C["panel"], plot_bgcolor=C["bg"],
-            font=dict(family=FONT, color=C["text"], size=12))
+PL   = dict(
+    paper_bgcolor=C["panel"], plot_bgcolor=C["bg"],
+    font=dict(family=FONT, color=C["text"], size=12),
+    # uirevision keeps the chart DOM node alive across reruns — only data
+    # is patched, preventing the full flash/blink on every refresh.
+    uirevision="static",
+    transition=dict(duration=200, easing="linear"),
+)
 AX   = dict(gridcolor=C["grid"], zeroline=False, showgrid=True)
 
 # ── Baked training data ───────────────────────────────────────────────────────
@@ -478,14 +484,15 @@ with tab1:
                 line=dict(color=C["muted"], width=1))
 
         ob.update_layout(**PL, barmode="overlay", showlegend=True,
+            uirevision="orderbook",   # separate key so price axis updates freely
             legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
                         font=dict(size=10, color=C["text"])),
-            title=dict(text=f"Mid  ${s['mid']:>12,.2f}",
+            title=dict(text=f"Mid  &#36;{s['mid']:>12,.2f}",
                        font=dict(color=C["accent"], size=13, family=FONT), x=0.02),
             margin=dict(l=50, r=10, t=40, b=40), height=400)
         ob.update_xaxes(title_text="Size (BTC)", **AX)
         ob.update_yaxes(title_text="Price ($)", tickformat=",.0f", **AX)
-        st.plotly_chart(ob, use_container_width=True,
+        st.plotly_chart(ob, use_container_width=True, key="ob",
                         config={"displayModeBar": False})
 
         # Use columns to avoid Streamlit treating $ prices as LaTeX delimiters
@@ -536,7 +543,7 @@ with tab1:
                               secondary_y=False, **AX)
         pnl_fig.update_yaxes(title_text="Inventory", color=C["warn"],
                               secondary_y=True, **AX)
-        st.plotly_chart(pnl_fig, use_container_width=True,
+        st.plotly_chart(pnl_fig, use_container_width=True, key="pnl",
                         config={"displayModeBar": False})
 
         c_sp, c_inv = st.columns(2)
@@ -557,7 +564,7 @@ with tab1:
                 margin=dict(l=50, r=10, t=8, b=28))
             sp_fig.update_xaxes(**AX)
             sp_fig.update_yaxes(title_text="bps", **AX)
-            st.plotly_chart(sp_fig, use_container_width=True,
+            st.plotly_chart(sp_fig, use_container_width=True, key="sp",
                             config={"displayModeBar": False})
 
         with c_inv:
@@ -572,7 +579,7 @@ with tab1:
                 margin=dict(l=50, r=10, t=8, b=28))
             inv_fig.update_xaxes(**AX)
             inv_fig.update_yaxes(title_text="|Inv| BTC", **AX)
-            st.plotly_chart(inv_fig, use_container_width=True,
+            st.plotly_chart(inv_fig, use_container_width=True, key="inv",
                             config={"displayModeBar": False})
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -674,7 +681,7 @@ with tab2:
             xaxis_title="Training Steps", yaxis_title="Episode Reward")
         train_fig.update_xaxes(tickformat=".2s", **AX)
         train_fig.update_yaxes(**AX)
-        st.plotly_chart(train_fig, use_container_width=True,
+        st.plotly_chart(train_fig, use_container_width=True, key="train",
                         config={"displayModeBar": False})
 
     with tc2:
@@ -699,7 +706,7 @@ with tab2:
             margin=dict(l=40, r=20, t=20, b=40))
         bar_fig.update_xaxes(**AX)
         bar_fig.update_yaxes(**AX)
-        st.plotly_chart(bar_fig, use_container_width=True,
+        st.plotly_chart(bar_fig, use_container_width=True, key="bar",
                         config={"displayModeBar": False})
 
     # Live head-to-head
@@ -744,7 +751,7 @@ with tab2:
         margin=dict(l=50, r=20, t=10, b=40))
     live_fig.update_xaxes(title_text="Step", **AX)
     live_fig.update_yaxes(title_text="Cumulative P&L ($)", **AX)
-    st.plotly_chart(live_fig, use_container_width=True,
+    st.plotly_chart(live_fig, use_container_width=True, key="live",
                     config={"displayModeBar": False})
 
     # How it was found + limitations
