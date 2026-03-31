@@ -789,11 +789,12 @@ with tab2:
             ("State-independent σ", "log_std is a fixed parameter, not conditioned on state."),
             ("No transaction costs", "Fees, slippage, and market impact not modeled."),
         ]:
+            warn_c = C["warn"]; muted_c = C["muted"]
             st.markdown(
                 f"<div style='margin-bottom:6px;font-family:{FONT};'>"
-                f"<span style='color:{C[\"warn\"]};font-size:11px;font-weight:700;'>"
+                f"<span style='color:{warn_c};font-size:11px;font-weight:700;'>"
                 f"{title}: </span>"
-                f"<span style='color:{C[\"muted\"]};font-size:11px;'>{text}</span></div>",
+                f"<span style='color:{muted_c};font-size:11px;'>{text}</span></div>",
                 unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
