@@ -174,6 +174,9 @@ def _init_ss():
     ss.last_trade_time  = ""
     ss.prev_strategy    = "rl"
     ss.prev_spread_mult = 1.0
+    ss.data_version     = 0
+    ss.last_rendered_v  = -1
+    ss.cached_figs      = {}
 
 _init_ss()
 
@@ -184,6 +187,9 @@ def _reset():
     ss.state        = _fresh_state()
     ss.twap_state   = {"inventory": 0.0, "pnl": 0.0, "peak_pnl": 0.0}
     ss.last_trade_time = ""
+    ss.data_version = ss.get("data_version", 0) + 1
+    ss.last_rendered_v = -1
+    ss.cached_figs  = {}
     ss.cur.update({"pnl": 0.0, "inventory": 0.0, "drawdown": 0.0,
                    "spread_bps": 0.0, "fill_rate": 0.0, "twap_pnl": 0.0})
 
@@ -264,6 +270,7 @@ def _tick(agent, gamma, spread_mult, feed, synth, features, sim):
         twap_pnl=ss.twap_state["pnl"],
     ))
     ss.state["step"] += 1
+    ss.data_version = ss.get("data_version", 0) + 1
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LOAD RESOURCES
@@ -357,9 +364,11 @@ def _live_view():
     agents   = {"rl": rl_agent, "twap": _TWAP(), "random": _Random()}
 
     # ── Run ticks ─────────────────────────────────────────────────────────────────
+    prev_step = ss.state["step"]
     agent = agents[strategy]
     for _ in range(speed):
         _tick(agent, gamma, spread_mult, feed, synth, features, sim)
+    data_changed = ss.state["step"] != prev_step
 
     s     = ss.cur
     steps = list(ss.hist["steps"])
@@ -464,64 +473,69 @@ def _live_view():
         with col_ob:
             st.markdown(_mhdr("ORDER BOOK DEPTH"), unsafe_allow_html=True)
 
-            ob = go.Figure()
-            if s["bids"]:
-                ob.add_trace(go.Bar(
-                    x=[-float(b[1]) for b in s["bids"]],
-                    y=[float(b[0]) for b in s["bids"]],
-                    orientation="h", name="Bid",
-                    marker=dict(color=C["bid"], opacity=0.85),
-                    hovertemplate="%{y:.2f} — %{customdata:.4f} BTC<extra></extra>",
-                    customdata=[float(b[1]) for b in s["bids"]]))
-            if s["asks"]:
-                ob.add_trace(go.Bar(
-                    x=[float(a[1]) for a in s["asks"]],
-                    y=[float(a[0]) for a in s["asks"]],
-                    orientation="h", name="Ask",
-                    marker=dict(color=C["ask"], opacity=0.85),
-                    hovertemplate="%{y:.2f} — %{customdata:.4f} BTC<extra></extra>",
-                    customdata=[float(a[1]) for a in s["asks"]]))
+            if "cached_figs" not in ss:
+                ss.cached_figs = {}
 
-            all_prices = ([float(x[0]) for x in s["bids"]] +
-                          [float(x[0]) for x in s["asks"]])
-            max_q = max(
-                [float(x[1]) for x in s["bids"]] +
-                [float(x[1]) for x in s["asks"]] + [0.001]) * 1.6
-            price_range = (max(all_prices) - min(all_prices)
-                           if len(all_prices) >= 2 else 1.0)
+            if data_changed or "ob" not in ss.cached_figs:
+                ob = go.Figure()
+                if s["bids"]:
+                    ob.add_trace(go.Bar(
+                        x=[-float(b[1]) for b in s["bids"]],
+                        y=[float(b[0]) for b in s["bids"]],
+                        orientation="h", name="Bid",
+                        marker=dict(color=C["bid"], opacity=0.85),
+                        hovertemplate="%{y:.2f} — %{customdata:.4f} BTC<extra></extra>",
+                        customdata=[float(b[1]) for b in s["bids"]]))
+                if s["asks"]:
+                    ob.add_trace(go.Bar(
+                        x=[float(a[1]) for a in s["asks"]],
+                        y=[float(a[0]) for a in s["asks"]],
+                        orientation="h", name="Ask",
+                        marker=dict(color=C["ask"], opacity=0.85),
+                        hovertemplate="%{y:.2f} — %{customdata:.4f} BTC<extra></extra>",
+                        customdata=[float(a[1]) for a in s["asks"]]))
 
-            bid_p, ask_p = s["bid_price"], s["ask_price"]
-            for price, col in [(bid_p, C["agent_bid"]), (ask_p, C["agent_ask"])]:
-                ob.add_shape(type="line", x0=-max_q, x1=max_q,
-                             y0=price, y1=price,
-                             line=dict(color=col, width=1.5, dash="dot"))
+                all_prices = ([float(x[0]) for x in s["bids"]] +
+                              [float(x[0]) for x in s["asks"]])
+                max_q = max(
+                    [float(x[1]) for x in s["bids"]] +
+                    [float(x[1]) for x in s["asks"]] + [0.001]) * 1.6
+                price_range = (max(all_prices) - min(all_prices)
+                               if len(all_prices) >= 2 else 1.0)
 
-            min_y_sep = max(price_range * 0.15, 1.0)
-            mid_p     = (bid_p + ask_p) / 2.0
-            ob.add_annotation(x=-max_q*0.85, y=mid_p - min_y_sep/2,
-                text=f"AGENT BID  ${bid_p:,.2f}", showarrow=False,
-                font=dict(color=C["agent_bid"], size=11, family=FONT),
-                xanchor="left", bgcolor="rgba(0,0,0,0.5)", borderpad=3)
-            ob.add_annotation(x=max_q*0.85, y=mid_p + min_y_sep/2,
-                text=f"AGENT ASK  ${ask_p:,.2f}", showarrow=False,
-                font=dict(color=C["agent_ask"], size=11, family=FONT),
-                xanchor="right", bgcolor="rgba(0,0,0,0.5)", borderpad=3)
+                bid_p, ask_p = s["bid_price"], s["ask_price"]
+                for price, col in [(bid_p, C["agent_bid"]), (ask_p, C["agent_ask"])]:
+                    ob.add_shape(type="line", x0=-max_q, x1=max_q,
+                                 y0=price, y1=price,
+                                 line=dict(color=col, width=1.5, dash="dot"))
 
-            if all_prices:
-                ob.add_shape(type="line", x0=0, x1=0,
-                    y0=min(all_prices)-1, y1=max(all_prices)+1,
-                    line=dict(color=C["muted"], width=1))
+                min_y_sep = max(price_range * 0.15, 1.0)
+                mid_p     = (bid_p + ask_p) / 2.0
+                ob.add_annotation(x=-max_q*0.85, y=mid_p - min_y_sep/2,
+                    text=f"AGENT BID  ${bid_p:,.2f}", showarrow=False,
+                    font=dict(color=C["agent_bid"], size=11, family=FONT),
+                    xanchor="left", bgcolor="rgba(0,0,0,0.5)", borderpad=3)
+                ob.add_annotation(x=max_q*0.85, y=mid_p + min_y_sep/2,
+                    text=f"AGENT ASK  ${ask_p:,.2f}", showarrow=False,
+                    font=dict(color=C["agent_ask"], size=11, family=FONT),
+                    xanchor="right", bgcolor="rgba(0,0,0,0.5)", borderpad=3)
 
-            ob.update_layout(**PL, barmode="overlay", showlegend=True,
-                uirevision="orderbook", transition=_TR,
-                legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
-                            font=dict(size=10, color=C["text"])),
-                title=dict(text=f"Mid  &#36;{s['mid']:>12,.2f}",
-                           font=dict(color=C["accent"], size=13, family=FONT), x=0.02),
-                margin=dict(l=50, r=10, t=40, b=40), height=400)
-            ob.update_xaxes(title_text="Size (BTC)", **AX)
-            ob.update_yaxes(title_text="Price ($)", tickformat=",.0f", **AX)
-            st.plotly_chart(ob, width='stretch', key="ob",
+                if all_prices:
+                    ob.add_shape(type="line", x0=0, x1=0,
+                        y0=min(all_prices)-1, y1=max(all_prices)+1,
+                        line=dict(color=C["muted"], width=1))
+
+                ob.update_layout(**PL, barmode="overlay", showlegend=True,
+                    uirevision="orderbook",
+                    legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=10, color=C["text"])),
+                    title=dict(text=f"Mid  &#36;{s['mid']:>12,.2f}",
+                               font=dict(color=C["accent"], size=13, family=FONT), x=0.02),
+                    margin=dict(l=50, r=10, t=40, b=40), height=400)
+                ob.update_xaxes(title_text="Size (BTC)", **AX)
+                ob.update_yaxes(title_text="Price ($)", tickformat=",.0f", **AX)
+                ss.cached_figs["ob"] = ob
+            st.plotly_chart(ss.cached_figs["ob"], width='stretch', key="ob",
                             config={"displayModeBar": False})
 
             # Use columns to avoid Streamlit treating $ prices as LaTeX delimiters
@@ -547,68 +561,74 @@ def _live_view():
         # ── P&L + Inventory, Spread, Inventory Risk ───────────────────────────────
         with col_right:
             st.markdown(_mhdr("P&L / INVENTORY"), unsafe_allow_html=True)
-            pnl_fig = make_subplots(specs=[[{"secondary_y": True}]])
-            if steps:
-                pv = list(ss.hist["pnl"])
-                iv = list(ss.hist["inv"])
-                dv = list(ss.hist["drawdown"])
-                pnl_fig.add_trace(go.Scatter(x=steps, y=dv, name="Drawdown",
-                    fill="tozeroy", fillcolor="rgba(255,23,68,0.10)",
-                    line=dict(color="rgba(255,23,68,0.30)", width=0.5)),
-                    secondary_y=False)
-                pnl_fig.add_trace(go.Scatter(x=steps, y=pv, name="PnL ($)",
-                    line=dict(color=C["pos"], width=2)), secondary_y=False)
-                pnl_fig.add_trace(go.Scatter(x=steps, y=iv, name="Inventory",
-                    line=dict(color=C["warn"], width=1.5, dash="dot")),
-                    secondary_y=True)
-                pnl_fig.add_hline(y=0, line=dict(color=C["muted"], width=0.5),
-                                   secondary_y=False)
-            pnl_fig.update_layout(**PL, uirevision="pnl", transition=_TR, height=190,
-                legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
-                            font=dict(size=10, color=C["text"])),
-                margin=dict(l=50, r=50, t=8, b=28))
-            pnl_fig.update_xaxes(**AX)
-            pnl_fig.update_yaxes(title_text="PnL ($)", color=C["pos"],
-                                  secondary_y=False, **AX)
-            pnl_fig.update_yaxes(title_text="Inventory", color=C["warn"],
-                                  secondary_y=True, **AX)
-            st.plotly_chart(pnl_fig, width='stretch', key="pnl",
+            if data_changed or "pnl" not in ss.cached_figs:
+                pnl_fig = make_subplots(specs=[[{"secondary_y": True}]])
+                if steps:
+                    pv = list(ss.hist["pnl"])
+                    iv = list(ss.hist["inv"])
+                    dv = list(ss.hist["drawdown"])
+                    pnl_fig.add_trace(go.Scatter(x=steps, y=dv, name="Drawdown",
+                        fill="tozeroy", fillcolor="rgba(255,23,68,0.10)",
+                        line=dict(color="rgba(255,23,68,0.30)", width=0.5)),
+                        secondary_y=False)
+                    pnl_fig.add_trace(go.Scatter(x=steps, y=pv, name="PnL ($)",
+                        line=dict(color=C["pos"], width=2)), secondary_y=False)
+                    pnl_fig.add_trace(go.Scatter(x=steps, y=iv, name="Inventory",
+                        line=dict(color=C["warn"], width=1.5, dash="dot")),
+                        secondary_y=True)
+                    pnl_fig.add_hline(y=0, line=dict(color=C["muted"], width=0.5),
+                                       secondary_y=False)
+                pnl_fig.update_layout(**PL, uirevision="pnl", height=190,
+                    legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=10, color=C["text"])),
+                    margin=dict(l=50, r=50, t=8, b=28))
+                pnl_fig.update_xaxes(**AX)
+                pnl_fig.update_yaxes(title_text="PnL ($)", color=C["pos"],
+                                      secondary_y=False, **AX)
+                pnl_fig.update_yaxes(title_text="Inventory", color=C["warn"],
+                                      secondary_y=True, **AX)
+                ss.cached_figs["pnl"] = pnl_fig
+            st.plotly_chart(ss.cached_figs["pnl"], width='stretch', key="pnl",
                             config={"displayModeBar": False})
 
             c_sp, c_inv = st.columns(2)
             with c_sp:
                 st.markdown(_mhdr("SPREAD HISTORY (bps)"), unsafe_allow_html=True)
-                sp_fig = go.Figure()
-                if steps:
-                    sv2     = list(ss.hist["spread"])
-                    sp_mean = float(np.mean(sv2)) if sv2 else 0
-                    sp_fig.add_trace(go.Scatter(x=steps, y=sv2,
-                        line=dict(color=C["accent"], width=1.5),
-                        fill="tozeroy", fillcolor="rgba(0,180,216,0.08)"))
-                    sp_fig.add_hline(y=sp_mean,
-                        line=dict(color=C["muted"], dash="dash", width=1),
-                        annotation_text=f"μ={sp_mean:.2f}",
-                        annotation_font_color=C["muted"])
-                sp_fig.update_layout(**PL, uirevision="sp", transition=_TR, showlegend=False, height=185,
-                    margin=dict(l=50, r=10, t=8, b=28))
-                sp_fig.update_xaxes(**AX)
-                sp_fig.update_yaxes(title_text="bps", **AX)
-                st.plotly_chart(sp_fig, width='stretch', key="sp",
+                if data_changed or "sp" not in ss.cached_figs:
+                    sp_fig = go.Figure()
+                    if steps:
+                        sv2     = list(ss.hist["spread"])
+                        sp_mean = float(np.mean(sv2)) if sv2 else 0
+                        sp_fig.add_trace(go.Scatter(x=steps, y=sv2,
+                            line=dict(color=C["accent"], width=1.5),
+                            fill="tozeroy", fillcolor="rgba(0,180,216,0.08)"))
+                        sp_fig.add_hline(y=sp_mean,
+                            line=dict(color=C["muted"], dash="dash", width=1),
+                            annotation_text=f"μ={sp_mean:.2f}",
+                            annotation_font_color=C["muted"])
+                    sp_fig.update_layout(**PL, uirevision="sp", showlegend=False, height=185,
+                        margin=dict(l=50, r=10, t=8, b=28))
+                    sp_fig.update_xaxes(**AX)
+                    sp_fig.update_yaxes(title_text="bps", **AX)
+                    ss.cached_figs["sp"] = sp_fig
+                st.plotly_chart(ss.cached_figs["sp"], width='stretch', key="sp",
                                 config={"displayModeBar": False})
 
             with c_inv:
                 st.markdown(_mhdr("INVENTORY RISK"), unsafe_allow_html=True)
-                inv_fig = go.Figure()
-                if steps:
-                    ia   = [abs(v) for v in list(ss.hist["inv"])]
-                    cols = [C["pos"] if v < 3 else C["warn"] if v < 7
-                            else C["neg"] for v in ia]
-                    inv_fig.add_trace(go.Bar(x=steps, y=ia, marker_color=cols))
-                inv_fig.update_layout(**PL, uirevision="inv", transition=_TR, showlegend=False, height=185,
-                    margin=dict(l=50, r=10, t=8, b=28))
-                inv_fig.update_xaxes(**AX)
-                inv_fig.update_yaxes(title_text="|Inv| BTC", **AX)
-                st.plotly_chart(inv_fig, width='stretch', key="inv",
+                if data_changed or "inv" not in ss.cached_figs:
+                    inv_fig = go.Figure()
+                    if steps:
+                        ia   = [abs(v) for v in list(ss.hist["inv"])]
+                        cols = [C["pos"] if v < 3 else C["warn"] if v < 7
+                                else C["neg"] for v in ia]
+                        inv_fig.add_trace(go.Bar(x=steps, y=ia, marker_color=cols))
+                    inv_fig.update_layout(**PL, uirevision="inv", showlegend=False, height=185,
+                        margin=dict(l=50, r=10, t=8, b=28))
+                    inv_fig.update_xaxes(**AX)
+                    inv_fig.update_yaxes(title_text="|Inv| BTC", **AX)
+                    ss.cached_figs["inv"] = inv_fig
+                st.plotly_chart(ss.cached_figs["inv"], width='stretch', key="inv",
                                 config={"displayModeBar": False})
 
     # ─────────────────────────────────────────────────────────────────────────────
@@ -705,7 +725,7 @@ def _live_view():
             train_fig.add_annotation(x=TRAIN_STEPS[-1], y=TRAIN_REWARD[-1],
                 text=f" FINAL<br> {TRAIN_REWARD[-1]}", showarrow=False,
                 font=dict(color=C["pos"], size=10, family=FONT), xanchor="right")
-            train_fig.update_layout(**PL, uirevision="train", transition=_TR, showlegend=False, height=280,
+            train_fig.update_layout(**PL, uirevision="train", showlegend=False, height=280,
                 margin=dict(l=50, r=20, t=20, b=40),
                 xaxis_title="Training Steps", yaxis_title="Episode Reward")
             train_fig.update_xaxes(tickformat=".2s", **AX)
@@ -729,7 +749,7 @@ def _live_view():
                 marker_color=C["twap"], opacity=0.9,
                 text=[f"{v:.4f}" for v in twv], textposition="outside",
                 textfont=dict(color=C["twap"], size=10)))
-            bar_fig.update_layout(**PL, uirevision="bar", transition=_TR, barmode="group", height=280,
+            bar_fig.update_layout(**PL, uirevision="bar", barmode="group", height=280,
                 legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
                             font=dict(size=10, color=C["text"])),
                 margin=dict(l=40, r=20, t=20, b=40))
@@ -742,45 +762,47 @@ def _live_view():
         st.markdown(_mhdr("LIVE HEAD-TO-HEAD: ACTIVE STRATEGY vs TWAP (SAME MARKET DATA)"),
                     unsafe_allow_html=True)
         st.caption("Both strategies receive identical snapshots simultaneously — only quote placement differs")
-        live_fig  = go.Figure()
         albl      = agents[strategy].label
-        l_steps   = list(ss.hist["steps"])
-        if l_steps:
-            l_pnl  = list(ss.hist["pnl"])
-            t_pnl  = list(ss.twap_hist["pnl"])
-            t_stps = list(ss.twap_hist["steps"])
-            lc     = C["pos"] if strategy == "rl" else C["ask"]
-            live_fig.add_trace(go.Scatter(x=l_steps, y=l_pnl, name=albl,
-                line=dict(color=lc, width=2.5)))
-            if t_stps:
-                live_fig.add_trace(go.Scatter(x=t_stps, y=t_pnl,
-                    name="TWAP (parallel)",
-                    line=dict(color=C["twap"], width=2, dash="dot")))
-            live_fig.add_hline(y=0, line=dict(color=C["muted"], width=0.5))
-            if l_pnl and t_pnl:
-                if strategy == "twap":
-                    live_fig.add_annotation(
-                        x=l_steps[len(l_steps)//2],
-                        y=max(l_pnl[-1], t_pnl[-1]),
-                        text="Switch to RL AGENT or RANDOM to compare vs TWAP",
-                        showarrow=False,
-                        font=dict(color=C["muted"], size=11, family=FONT),
-                        xanchor="center")
-                else:
-                    diff     = l_pnl[-1] - t_pnl[-1]
-                    diff_str = f"+${diff:.5f}" if diff >= 0 else f"-${abs(diff):.5f}"
-                    diff_col = C["pos"] if diff >= 0 else C["neg"]
-                    live_fig.add_annotation(x=l_steps[-1], y=l_pnl[-1],
-                        text=f" {albl} leads by {diff_str}", showarrow=False,
-                        font=dict(color=diff_col, size=11, family=FONT),
-                        xanchor="right")
-        live_fig.update_layout(**PL, uirevision="live", transition=_TR, height=240,
-            legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
-                        font=dict(size=11, color=C["text"])),
-            margin=dict(l=50, r=20, t=10, b=40))
-        live_fig.update_xaxes(title_text="Step", **AX)
-        live_fig.update_yaxes(title_text="Cumulative P&L ($)", **AX)
-        st.plotly_chart(live_fig, width='stretch', key="live",
+        if data_changed or "live" not in ss.cached_figs:
+            live_fig  = go.Figure()
+            l_steps   = list(ss.hist["steps"])
+            if l_steps:
+                l_pnl  = list(ss.hist["pnl"])
+                t_pnl  = list(ss.twap_hist["pnl"])
+                t_stps = list(ss.twap_hist["steps"])
+                lc     = C["pos"] if strategy == "rl" else C["ask"]
+                live_fig.add_trace(go.Scatter(x=l_steps, y=l_pnl, name=albl,
+                    line=dict(color=lc, width=2.5)))
+                if t_stps:
+                    live_fig.add_trace(go.Scatter(x=t_stps, y=t_pnl,
+                        name="TWAP (parallel)",
+                        line=dict(color=C["twap"], width=2, dash="dot")))
+                live_fig.add_hline(y=0, line=dict(color=C["muted"], width=0.5))
+                if l_pnl and t_pnl:
+                    if strategy == "twap":
+                        live_fig.add_annotation(
+                            x=l_steps[len(l_steps)//2],
+                            y=max(l_pnl[-1], t_pnl[-1]),
+                            text="Switch to RL AGENT or RANDOM to compare vs TWAP",
+                            showarrow=False,
+                            font=dict(color=C["muted"], size=11, family=FONT),
+                            xanchor="center")
+                    else:
+                        diff     = l_pnl[-1] - t_pnl[-1]
+                        diff_str = f"+${diff:.5f}" if diff >= 0 else f"-${abs(diff):.5f}"
+                        diff_col = C["pos"] if diff >= 0 else C["neg"]
+                        live_fig.add_annotation(x=l_steps[-1], y=l_pnl[-1],
+                            text=f" {albl} leads by {diff_str}", showarrow=False,
+                            font=dict(color=diff_col, size=11, family=FONT),
+                            xanchor="right")
+            live_fig.update_layout(**PL, uirevision="live", height=240,
+                legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)",
+                            font=dict(size=11, color=C["text"])),
+                margin=dict(l=50, r=20, t=10, b=40))
+            live_fig.update_xaxes(title_text="Step", **AX)
+            live_fig.update_yaxes(title_text="Cumulative P&L ($)", **AX)
+            ss.cached_figs["live"] = live_fig
+        st.plotly_chart(ss.cached_figs["live"], width='stretch', key="live",
                         config={"displayModeBar": False})
 
         # How it was found + limitations
