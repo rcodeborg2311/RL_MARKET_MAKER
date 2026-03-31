@@ -188,164 +188,13 @@ def _reset():
     ss.twap_state   = {"inventory": 0.0, "pnl": 0.0, "peak_pnl": 0.0}
     ss.last_trade_time = ""
     ss.data_version = ss.get("data_version", 0) + 1
-    ss.last_rendered_v = -1
-    ss.cached_figs  = {}
-    ss.cur.update({"pnl": 0.0, "inventory": 0.0, "drawdown": 0.0,
-                   "spread_bps": 0.0, "fill_rate": 0.0, "twap_pnl": 0.0})
-
-# ── Data fetch ────────────────────────────────────────────────────────────────
-def _next_snap(feed, synth):
-    ss = st.session_state
-    if feed is not None:
-        b, a  = feed.get_snapshot()
-        # get_new_trades() returns only trades since the last call — no duplicates
-        new_t = feed.get_new_trades()
-        return {"bids": b, "asks": a, "trades": new_t}
-    s = synth[ss.si % len(synth)]; ss.si += 1; return s
-
-# ── Tick ──────────────────────────────────────────────────────────────────────
-def _tick(agent, gamma, spread_mult, feed, synth, features, sim):
-    ss   = st.session_state
-    snap = _next_snap(feed, synth)
-    bids, asks, trades = snap["bids"], snap["asks"], snap.get("trades", [])
-    if not bids or not asks:
-        return
-
-    tick_size = 0.01
-    mid = features.mid_price(bids, asks)
-    sv  = features.compute_state_vector(bids, asks, trades, mid,
-                                         ss.state["inventory"], ss.state["pnl"])
-
-    action = agent.get_action(sv)
-    bid_p  = mid + float(np.clip(action[0], -5, 0)) * tick_size * spread_mult
-    ask_p  = mid + float(np.clip(action[1],  0, 5)) * tick_size * spread_mult
-    if ask_p <= bid_p:
-        ask_p = bid_p + tick_size
-
-    bf, af = sim.simulate_fills(bid_p, 0.001, ask_p, 0.001, trades)
-    ss.state["inventory"] += bf - af
-    ss.state["pnl"]       += af * (ask_p - mid) + bf * (mid - bid_p)
-
-    got_fill = 1 if (bf > 0 or af > 0) else 0
-    if got_fill:
-        ss.state["total_fills"] += 1
-    if "filled" not in ss.hist:
-        ss.hist["filled"] = deque(maxlen=MAX_HIST)
-    ss.hist["filled"].append(got_fill)
-    # Rolling fill rate over the last 50 steps — reflects current performance,
-    # not cumulative history (which gets dragged down by the initial trade dump)
-    recent = list(ss.hist["filled"])[-50:]
-    fill_rate = sum(recent) / len(recent) if recent else 0.0
-    spread_bps = (ask_p - bid_p) / mid * 10_000 if mid > 0 else 0.0
-    ss.state["peak_pnl"] = max(ss.state["peak_pnl"], ss.state["pnl"])
-    drawdown   = ss.state["pnl"] - ss.state["peak_pnl"]
-    sigma_est  = max(float(sv[14]) if len(sv) > 14 else 0.01, 0.01)
-    risk_adj   = ss.state["pnl"] - gamma * (ss.state["inventory"]**2) * (sigma_est**2)
-
-    ss.hist["pnl"].append(ss.state["pnl"])
-    ss.hist["inv"].append(ss.state["inventory"])
-    ss.hist["spread"].append(spread_bps)
-    ss.hist["drawdown"].append(drawdown)
-    ss.hist["steps"].append(ss.state["step"])
-
-    # TWAP runs in parallel on the same snapshot
-    t_sv  = features.compute_state_vector(bids, asks, trades, mid,
-                                           ss.twap_state["inventory"],
-                                           ss.twap_state["pnl"])
-    t_act = _TWAP().get_action(t_sv)
-    t_bid = mid + float(np.clip(t_act[0], -5, 0)) * tick_size
-    t_ask = mid + float(np.clip(t_act[1],  0, 5)) * tick_size
-    if t_ask <= t_bid: t_ask = t_bid + tick_size
-    tbf, taf = sim.simulate_fills(t_bid, 0.001, t_ask, 0.001, trades)
-    ss.twap_state["inventory"] += tbf - taf
-    ss.twap_state["pnl"]       += taf*(t_ask-mid) + tbf*(mid-t_bid)
-    ss.twap_hist["pnl"].append(ss.twap_state["pnl"])
-    ss.twap_hist["steps"].append(ss.state["step"])
-
-    ss.cur.update(dict(
-        bids=bids, asks=asks, mid=mid, bid_price=bid_p, ask_price=ask_p,
-        pnl=ss.state["pnl"], risk_adj_pnl=risk_adj,
-        inventory=ss.state["inventory"], spread_bps=spread_bps,
-        fill_rate=fill_rate, sigma=sigma_est, drawdown=drawdown,
-        twap_pnl=ss.twap_state["pnl"],
-    ))
-    ss.state["step"] += 1
-    ss.data_version = ss.get("data_version", 0) + 1
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LOAD RESOURCES
-# ═══════════════════════════════════════════════════════════════════════════════
-model    = _load_model()
-synth    = _load_synth()
-feed     = _start_feed()
-features = _make_features()
-sim      = _make_sim()
-live     = feed is not None
-
-rl_agent = _RLAgent(model) if model else _TWAP()
-agents   = {"rl": rl_agent, "twap": _TWAP(), "random": _Random()}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR
-# ═══════════════════════════════════════════════════════════════════════════════
-with st.sidebar:
-    st.markdown(
-        f"<div style='font-family:{FONT};'>"
-        f"<span style='color:{C['accent']};font-weight:800;font-size:18px;"
-        f"letter-spacing:2px;'>RL MARKET MAKER</span><br>"
-        f"<span style='color:{C['text']};font-size:13px;font-weight:600;"
-        f"letter-spacing:1px;'>BTC-USD PERP</span></div>",
-        unsafe_allow_html=True)
-
-    live_color = C["pos"] if live else C["muted"]
-    live_label = "● LIVE COINBASE" if live else "○ SYNTHETIC DATA"
-    st.markdown(
-        f"<div style='color:{live_color};font-family:{FONT};font-size:12px;"
-        f"margin:6px 0 12px;'>{live_label}</div>",
-        unsafe_allow_html=True)
-
-    st.divider()
-
-    strategy    = st.selectbox("STRATEGY",
-                     options=["rl", "twap", "random"],
-                     format_func=lambda x: {"rl":"RL AGENT","twap":"TWAP",
-                                            "random":"RANDOM"}[x])
-    speed       = st.radio("SPEED", [1, 5, 10],
-                     format_func=lambda x: f"{x}×", horizontal=True)
-    gamma       = st.slider("γ  INVENTORY PENALTY", 0.0, 1.0, 0.1, 0.05)
-    spread_mult = st.slider("SPREAD MULTIPLIER", 0.5, 3.0, 1.0, 0.25)
-
-    st.divider()
-
-    reset_clicked = st.button("■  RESET SESSION",
-                               use_container_width=True, type="primary")
-
-    ss = st.session_state
-    inv_pen = gamma * (ss.state["inventory"]**2) * (ss.cur.get("sigma", 0.01)**2)
-    st.markdown(
-        f"<div style='font-family:{FONT};font-size:11px;color:{C['muted']};'>"
-        f"step {ss.state['step']:,} · fills {ss.state['total_fills']:,}<br>"
-        f"γ={gamma:.2f} · spread×{spread_mult:.2f}<br>"
-        f"inv_penalty &#36;{inv_pen:.8f}</div>",
-        unsafe_allow_html=True)
-
-# ── Auto-reset on param change ────────────────────────────────────────────────
-if (strategy != ss.prev_strategy or spread_mult != ss.prev_spread_mult):
-    _reset()
-    ss.prev_strategy    = strategy
-    ss.prev_spread_mult = spread_mult
-
-if reset_clicked:
-    _reset()
 
 
-# Save sidebar params for fragment reruns (sidebar only reruns on user interaction)
-ss.ctrl_strategy    = strategy
-ss.ctrl_speed       = speed
-ss.ctrl_gamma       = gamma
-ss.ctrl_spread_mult = spread_mult
-
-@st.fragment(run_every=1)
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE VIEW FRAGMENT — defined at module level so sidebar reruns never
+# redefine it (which would remount all charts from scratch).
+# ─────────────────────────────────────────────────────────────────────────────
+@st.fragment(run_every=0.5)
 def _live_view():
     ss          = st.session_state
     strategy    = ss.get("ctrl_strategy", "rl")
@@ -859,5 +708,162 @@ def _live_view():
                     f"<span style='color:{muted_c};font-size:11px;'>{text}</span></div>",
                     unsafe_allow_html=True)
 
+
+    ss.last_rendered_v = -1
+    ss.cached_figs  = {}
+    ss.cur.update({"pnl": 0.0, "inventory": 0.0, "drawdown": 0.0,
+                   "spread_bps": 0.0, "fill_rate": 0.0, "twap_pnl": 0.0})
+
+# ── Data fetch ────────────────────────────────────────────────────────────────
+def _next_snap(feed, synth):
+    ss = st.session_state
+    if feed is not None:
+        b, a  = feed.get_snapshot()
+        # get_new_trades() returns only trades since the last call — no duplicates
+        new_t = feed.get_new_trades()
+        return {"bids": b, "asks": a, "trades": new_t}
+    s = synth[ss.si % len(synth)]; ss.si += 1; return s
+
+# ── Tick ──────────────────────────────────────────────────────────────────────
+def _tick(agent, gamma, spread_mult, feed, synth, features, sim):
+    ss   = st.session_state
+    snap = _next_snap(feed, synth)
+    bids, asks, trades = snap["bids"], snap["asks"], snap.get("trades", [])
+    if not bids or not asks:
+        return
+
+    tick_size = 0.01
+    mid = features.mid_price(bids, asks)
+    sv  = features.compute_state_vector(bids, asks, trades, mid,
+                                         ss.state["inventory"], ss.state["pnl"])
+
+    action = agent.get_action(sv)
+    bid_p  = mid + float(np.clip(action[0], -5, 0)) * tick_size * spread_mult
+    ask_p  = mid + float(np.clip(action[1],  0, 5)) * tick_size * spread_mult
+    if ask_p <= bid_p:
+        ask_p = bid_p + tick_size
+
+    bf, af = sim.simulate_fills(bid_p, 0.001, ask_p, 0.001, trades)
+    ss.state["inventory"] += bf - af
+    ss.state["pnl"]       += af * (ask_p - mid) + bf * (mid - bid_p)
+
+    got_fill = 1 if (bf > 0 or af > 0) else 0
+    if got_fill:
+        ss.state["total_fills"] += 1
+    if "filled" not in ss.hist:
+        ss.hist["filled"] = deque(maxlen=MAX_HIST)
+    ss.hist["filled"].append(got_fill)
+    # Rolling fill rate over the last 50 steps — reflects current performance,
+    # not cumulative history (which gets dragged down by the initial trade dump)
+    recent = list(ss.hist["filled"])[-50:]
+    fill_rate = sum(recent) / len(recent) if recent else 0.0
+    spread_bps = (ask_p - bid_p) / mid * 10_000 if mid > 0 else 0.0
+    ss.state["peak_pnl"] = max(ss.state["peak_pnl"], ss.state["pnl"])
+    drawdown   = ss.state["pnl"] - ss.state["peak_pnl"]
+    sigma_est  = max(float(sv[14]) if len(sv) > 14 else 0.01, 0.01)
+    risk_adj   = ss.state["pnl"] - gamma * (ss.state["inventory"]**2) * (sigma_est**2)
+
+    ss.hist["pnl"].append(ss.state["pnl"])
+    ss.hist["inv"].append(ss.state["inventory"])
+    ss.hist["spread"].append(spread_bps)
+    ss.hist["drawdown"].append(drawdown)
+    ss.hist["steps"].append(ss.state["step"])
+
+    # TWAP runs in parallel on the same snapshot
+    t_sv  = features.compute_state_vector(bids, asks, trades, mid,
+                                           ss.twap_state["inventory"],
+                                           ss.twap_state["pnl"])
+    t_act = _TWAP().get_action(t_sv)
+    t_bid = mid + float(np.clip(t_act[0], -5, 0)) * tick_size
+    t_ask = mid + float(np.clip(t_act[1],  0, 5)) * tick_size
+    if t_ask <= t_bid: t_ask = t_bid + tick_size
+    tbf, taf = sim.simulate_fills(t_bid, 0.001, t_ask, 0.001, trades)
+    ss.twap_state["inventory"] += tbf - taf
+    ss.twap_state["pnl"]       += taf*(t_ask-mid) + tbf*(mid-t_bid)
+    ss.twap_hist["pnl"].append(ss.twap_state["pnl"])
+    ss.twap_hist["steps"].append(ss.state["step"])
+
+    ss.cur.update(dict(
+        bids=bids, asks=asks, mid=mid, bid_price=bid_p, ask_price=ask_p,
+        pnl=ss.state["pnl"], risk_adj_pnl=risk_adj,
+        inventory=ss.state["inventory"], spread_bps=spread_bps,
+        fill_rate=fill_rate, sigma=sigma_est, drawdown=drawdown,
+        twap_pnl=ss.twap_state["pnl"],
+    ))
+    ss.state["step"] += 1
+    ss.data_version = ss.get("data_version", 0) + 1
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOAD RESOURCES
+# ═══════════════════════════════════════════════════════════════════════════════
+model    = _load_model()
+synth    = _load_synth()
+feed     = _start_feed()
+features = _make_features()
+sim      = _make_sim()
+live     = feed is not None
+
+rl_agent = _RLAgent(model) if model else _TWAP()
+agents   = {"rl": rl_agent, "twap": _TWAP(), "random": _Random()}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ═══════════════════════════════════════════════════════════════════════════════
+with st.sidebar:
+    st.markdown(
+        f"<div style='font-family:{FONT};'>"
+        f"<span style='color:{C['accent']};font-weight:800;font-size:18px;"
+        f"letter-spacing:2px;'>RL MARKET MAKER</span><br>"
+        f"<span style='color:{C['text']};font-size:13px;font-weight:600;"
+        f"letter-spacing:1px;'>BTC-USD PERP</span></div>",
+        unsafe_allow_html=True)
+
+    live_color = C["pos"] if live else C["muted"]
+    live_label = "● LIVE COINBASE" if live else "○ SYNTHETIC DATA"
+    st.markdown(
+        f"<div style='color:{live_color};font-family:{FONT};font-size:12px;"
+        f"margin:6px 0 12px;'>{live_label}</div>",
+        unsafe_allow_html=True)
+
+    st.divider()
+
+    strategy    = st.selectbox("STRATEGY",
+                     options=["rl", "twap", "random"],
+                     format_func=lambda x: {"rl":"RL AGENT","twap":"TWAP",
+                                            "random":"RANDOM"}[x])
+    speed       = st.radio("SPEED", [1, 5, 10],
+                     format_func=lambda x: f"{x}×", horizontal=True)
+    gamma       = st.slider("γ  INVENTORY PENALTY", 0.0, 1.0, 0.1, 0.05)
+    spread_mult = st.slider("SPREAD MULTIPLIER", 0.5, 3.0, 1.0, 0.25)
+
+    st.divider()
+
+    reset_clicked = st.button("■  RESET SESSION",
+                               use_container_width=True, type="primary")
+
+    ss = st.session_state
+    inv_pen = gamma * (ss.state["inventory"]**2) * (ss.cur.get("sigma", 0.01)**2)
+    st.markdown(
+        f"<div style='font-family:{FONT};font-size:11px;color:{C['muted']};'>"
+        f"step {ss.state['step']:,} · fills {ss.state['total_fills']:,}<br>"
+        f"γ={gamma:.2f} · spread×{spread_mult:.2f}<br>"
+        f"inv_penalty &#36;{inv_pen:.8f}</div>",
+        unsafe_allow_html=True)
+
+# ── Auto-reset on param change ────────────────────────────────────────────────
+if (strategy != ss.prev_strategy or spread_mult != ss.prev_spread_mult):
+    _reset()
+    ss.prev_strategy    = strategy
+    ss.prev_spread_mult = spread_mult
+
+if reset_clicked:
+    _reset()
+
+
+# Save sidebar params for fragment reruns
+ss.ctrl_strategy    = strategy
+ss.ctrl_speed       = speed
+ss.ctrl_gamma       = gamma
+ss.ctrl_spread_mult = spread_mult
 
 _live_view()

@@ -53,7 +53,7 @@ class CoinbaseRESTFeed:
             resp = self._session.get(
                 f"{BASE}/products/{PRODUCT}/book",
                 params={"level": "2"},
-                timeout=4,
+                timeout=1.5,
             )
             resp.raise_for_status()
             book = resp.json()
@@ -71,7 +71,7 @@ class CoinbaseRESTFeed:
             resp2 = self._session.get(
                 f"{BASE}/products/{PRODUCT}/trades",
                 params={"limit": "100"},
-                timeout=4,
+                timeout=1.5,
             )
             resp2.raise_for_status()
             raw = resp2.json()
